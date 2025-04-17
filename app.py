@@ -313,8 +313,42 @@ def generate_html_report(graph, name="network_graph"):
     for u, v, attrs in graph.edges(data=True):
         width = attrs.get('width', 1)
         color = attrs.get('color', '#848484')
-        title = attrs.get('title', '')
-        net.add_edge(u, v, width=width, color=color, title=title)
+        
+        # Create enhanced hover title with dataset information
+        layer = attrs.get('layer', 'unknown')
+        if layer == 'social_media':
+            dataset_name = "Social Media"
+        elif layer == 'telecom':
+            dataset_name = "Telecom Logs"
+        elif layer == 'incident':
+            dataset_name = "Incident Reports"
+        else:
+            dataset_name = "Unknown Dataset"
+        
+        # Add more information to the hover title
+        base_title = attrs.get('title', '')
+        edge_title = f"Source: {dataset_name}\n{base_title}"
+        
+        # Add additional context based on the dataset type
+        if layer == 'social_media' and 'message' in attrs:
+            edge_title += f"\nMessage: {attrs['message']}"
+        elif layer == 'telecom' and 'call_type' in attrs:
+            edge_title += f"\nCall Type: {attrs['call_type']}"
+            if 'duration' in attrs:
+                edge_title += f"\nDuration: {attrs['duration']}s"
+        elif layer == 'incident' and 'incident_type' in attrs:
+            edge_title += f"\nIncident Type: {attrs['incident_type']}"
+            if 'location' in attrs:
+                edge_title += f"\nLocation: {attrs['location']}"
+        
+        if 'timestamp' in attrs:
+            edge_title += f"\nTimestamp: {attrs['timestamp']}"
+        
+        # Mark new edges
+        if attrs.get('is_new', False):
+            edge_title += "\n(Newly Added)"
+            
+        net.add_edge(u, v, width=width, color=color, title=edge_title)
     
     # Configure physics
     net.toggle_physics(True)
