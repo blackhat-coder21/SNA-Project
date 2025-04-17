@@ -27,6 +27,206 @@ fake = Faker()
 random.seed(42)
 Faker.seed(42)
 
+# The fuzzy matching function from your code
+def fuzzy_match(name1, name2, threshold=80):
+    """Compares two names using fuzzywuzzy and returns True if match is above threshold."""
+    score = fuzz.ratio(name1, name2)
+    return score >= threshold
+
+# Return the actual score from fuzzy matching
+def get_fuzzy_score(name1, name2):
+    """Compares two names using fuzzywuzzy and returns the score."""
+    return fuzz.ratio(name1, name2)
+
+def create_user_name_mapping(social_df, telecom_df, incident_df):
+    """Create a mapping of user IDs to their canonical names."""
+    user_id_to_name = {}
+    
+    # Process social media data
+    if social_df is not None:
+        # Handle sender data
+        for _, row in social_df.iterrows():
+            if 'source' in row and pd.notnull(row['source']) and 'source_name' in row and pd.notnull(row['source_name']):
+                user_id_to_name[row['source']] = row['source_name']
+            if 'target' in row and pd.notnull(row['target']) and 'target_name' in row and pd.notnull(row['target_name']):
+                user_id_to_name[row['target']] = row['target_name']
+    
+    # Process telecom data
+    if telecom_df is not None:
+        for _, row in telecom_df.iterrows():
+            if 'source' in row and pd.notnull(row['source']) and 'source_name' in row and pd.notnull(row['source_name']):
+                user_id_to_name[row['source']] = row['source_name']
+            if 'target' in row and pd.notnull(row['target']) and 'target_name' in row and pd.notnull(row['target_name']):
+                user_id_to_name[row['target']] = row['target_name']
+    
+    # Process incident data
+    if incident_df is not None:
+        for _, row in incident_df.iterrows():
+            if 'source' in row and pd.notnull(row['source']) and 'source_name' in row and pd.notnull(row['source_name']):
+                user_id_to_name[row['source']] = row['source_name']
+            if 'target' in row and pd.notnull(row['target']) and 'target_name' in row and pd.notnull(row['target_name']):
+                user_id_to_name[row['target']] = row['target_name']
+    
+    return user_id_to_name
+
+
+# Evaluate the fuzzy matching function with your datasets
+def evaluate_fuzzy_matching(social_df, telecom_df, incident_df):
+    """
+    Evaluates the performance of fuzzy matching across datasets.
+    Returns evaluation metrics and sample results for analysis.
+    """
+    # Create a user ID to name mapping
+    user_id_to_name = create_user_name_mapping(social_df=social_df, telecom_df=telecom_df, incident_df=incident_df)
+
+    # Create datasets for evaluation
+    true_matches = []  # Known matching pairs (user_id, variant_name)
+    test_pairs = []    # All name pairs to test
+    
+    # Get users_df from session state - this is created in the Streamlit app
+    users_df = st.session_state.get('users_df')
+    if users_df is None:
+        # Fallback if not in session state
+        users_df = pd.DataFrame({
+            'id': list(user_id_to_name.keys()),
+            'name': list(user_id_to_name.values())
+        })
+
+    # Function to extract evaluation data from a dataset
+    def process_dataset(df, id_col1, name_col1, id_col2=None, name_col2=None):
+        dataset_pairs = []
+        dataset_matches = []
+
+        if id_col2 is None:  # Single user case
+            for _, row in df.iterrows():
+                user_id = row[id_col1]
+                variant_name = row[name_col1]
+                true_name = user_id_to_name.get(user_id)
+
+                if true_name:
+                    # This is a known match (ground truth)
+                    dataset_matches.append((true_name, variant_name, user_id))
+                    # Add to test pairs
+                    dataset_pairs.append((true_name, variant_name, True, user_id))
+
+                    # Also add some negative examples (non-matches)
+                    # Get 3 random different users
+                    other_users = users_df[users_df['id'] != user_id].sample(min(3, len(users_df)-1))
+                    for _, other_user in other_users.iterrows():
+                        dataset_pairs.append((other_user['name'], variant_name, False, f"{user_id}_{other_user['id']}"))
+
+        else:  # Dual user case (sender-receiver, caller-callee, etc.)
+            for _, row in df.iterrows():
+                # First user
+                user1_id = row[id_col1]
+                variant1_name = row[name_col1]
+                true1_name = user_id_to_name.get(user1_id)
+
+                # Second user
+                user2_id = row[id_col2]
+                variant2_name = row[name_col2]
+                true2_name = user_id_to_name.get(user2_id)
+
+                if true1_name:
+                    # User 1 matches
+                    dataset_matches.append((true1_name, variant1_name, user1_id))
+                    dataset_pairs.append((true1_name, variant1_name, True, user1_id))
+
+                if true2_name:
+                    # User 2 matches
+                    dataset_matches.append((true2_name, variant2_name, user2_id))
+                    dataset_pairs.append((true2_name, variant2_name, True, user2_id))
+
+                # Add some cross-match tests (should be negative)
+                if true1_name and true2_name:
+                    dataset_pairs.append((true1_name, variant2_name, False, f"{user1_id}_{user2_id}"))
+                    dataset_pairs.append((true2_name, variant1_name, False, f"{user2_id}_{user1_id}"))
+
+        return dataset_pairs, dataset_matches
+
+    # Process each dataset
+    social_pairs, social_matches = process_dataset(
+        social_df, 'source', 'source_name', 'target', 'target_name')
+
+    telecom_pairs, telecom_matches = process_dataset(
+        telecom_df, 'source', 'source_name', 'target', 'target_name')
+
+    incident_pairs, incident_matches = process_dataset(
+        incident_df, 'source', 'source_name', 'target', 'target_name')
+
+    # Combine all test data
+    true_matches = social_matches + telecom_matches + incident_matches
+    test_pairs = social_pairs + telecom_pairs + incident_pairs
+
+    # Calculate scores for all test pairs
+    scores = []
+    for name1, name2, is_match, pair_id in test_pairs:
+        score = get_fuzzy_score(name1, name2)
+        scores.append({
+            'name1': name1,
+            'name2': name2,
+            'true_match': is_match,
+            'score': score,
+            'pair_id': pair_id
+        })
+
+    scores_df = pd.DataFrame(scores)
+
+    # Evaluate across different thresholds
+    thresholds = range(30, 101, 5)  # 30, 35, 40, ..., 100
+    results = {}
+
+    for threshold in thresholds:
+        # Predict matches based on threshold
+        scores_df[f'predicted_{threshold}'] = scores_df['score'] >= threshold
+
+        # Calculate metrics
+        true_positives = sum((scores_df['true_match'] == True) & (scores_df[f'predicted_{threshold}'] == True))
+        false_positives = sum((scores_df['true_match'] == False) & (scores_df[f'predicted_{threshold}'] == True))
+        true_negatives = sum((scores_df['true_match'] == False) & (scores_df[f'predicted_{threshold}'] == False))
+        false_negatives = sum((scores_df['true_match'] == True) & (scores_df[f'predicted_{threshold}'] == False))
+
+        # Avoid division by zero
+        total = true_positives + false_positives + true_negatives + false_negatives
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        accuracy = (true_positives + true_negatives) / total if total > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+        results[threshold] = {
+            'threshold': threshold,
+            'true_positives': true_positives,
+            'false_positives': false_positives,
+            'true_negatives': true_negatives,
+            'false_negatives': false_negatives,
+            'precision': precision,
+            'recall': recall,
+            'accuracy': accuracy,
+            'f1_score': f1
+        }
+
+    # Find optimal threshold based on F1 score
+    results_df = pd.DataFrame(results).T
+    optimal_threshold = results_df['f1_score'].idxmax()
+
+    # Get some example results for review
+    interesting_examples = {
+        'false_positives': scores_df[(scores_df['true_match'] == False) &
+                                    (scores_df[f'predicted_{optimal_threshold}'] == True)].head(5),
+        'false_negatives': scores_df[(scores_df['true_match'] == True) &
+                                    (scores_df[f'predicted_{optimal_threshold}'] == False)].head(5),
+        'edge_cases': scores_df[(scores_df['score'] >= optimal_threshold - 10) &
+                               (scores_df['score'] <= optimal_threshold + 10)].sample(min(5, len(scores_df)))
+    }
+
+    return {
+        'metrics': results_df,
+        'optimal_threshold': optimal_threshold,
+        'scores': scores_df,
+        'examples': interesting_examples
+    }
+
+
 def get_dataset_requirements():
     """
     Return information about required columns for each dataset when user opts not to use sample data.
@@ -932,12 +1132,13 @@ def main():
     centrality_measures = compute_centrality_measures(G)
     
     # Create tabs for different analyses
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🕸️ Network Visualization", 
         "📊 Centrality Analysis", 
         "➕ Add Data Points",
         "👥 Community Detection",
-        "⏱️ Temporal Analysis"
+        "⏱️ Temporal Analysis",
+        "🔍 Evaluation Metrics"
     ])
     
     # Tab 1: Network Visualization
@@ -1367,5 +1568,196 @@ def main():
         """
     )
 
+    # Tab 6: Evaluation Metrics
+    with tab6:
+        st.header("Fuzzy Matching Evaluation")
+        
+        st.write("""
+        This tab evaluates how well fuzzy matching performs across datasets. 
+        It identifies true/false positives/negatives and calculates precision, recall, F1-score, and accuracy.
+        """)
+        
+        if social_df is not None and telecom_df is not None and incident_df is not None:
+            with st.spinner("Evaluating fuzzy matching performance..."):
+                try:
+                    # Let's make sure we have some data to work with
+                    if not isinstance(social_df, pd.DataFrame) or social_df.empty:
+                        st.error("Social media data is empty or invalid.")
+                    elif not isinstance(telecom_df, pd.DataFrame) or telecom_df.empty:
+                        st.error("Telecom data is empty or invalid.")
+                    elif not isinstance(incident_df, pd.DataFrame) or incident_df.empty:
+                        st.error("Incident data is empty or invalid.")
+                    else:
+                        # Create a users DataFrame based on resolved entities for evaluation
+                        users_df = pd.DataFrame({
+                            'id': list(resolved_entities.keys()),
+                            'name': [resolved_entities[uid] for uid in resolved_entities.keys()]
+                        })
+                        
+                        # Add users_df to the global scope so it's available in evaluate_fuzzy_matching
+                        st.session_state['users_df'] = users_df
+                        
+                        # Define helper function to get fuzzy score between two strings
+                        def get_fuzzy_score(name1, name2):
+                            """Return the fuzzy match score between two names."""
+                            return fuzz.ratio(name1, name2)
+                        
+                        # Call the evaluation function
+                        evaluation_results = evaluate_fuzzy_matching(social_df, telecom_df, incident_df)
+                        
+                        # Show evaluation metrics
+                        st.subheader("Fuzzy Matching Performance Metrics")
+                        
+                        # Plot metrics across thresholds
+                        metrics_df = evaluation_results['metrics']
+                        
+                        # 1. Precision, Recall, F1 Plot
+                        fig1 = go.Figure()
+                        fig1.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['precision'], 
+                                                mode='lines+markers', name='Precision'))
+                        fig1.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['recall'], 
+                                                mode='lines+markers', name='Recall'))
+                        fig1.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['f1_score'], 
+                                                mode='lines+markers', name='F1 Score'))
+                        
+                        # Add vertical line at optimal threshold
+                        optimal_threshold = evaluation_results.get('optimal_threshold')
+                        if optimal_threshold:
+                            fig1.add_vline(x=optimal_threshold, line_dash="dash", line_color="green",
+                                        annotation_text=f"Optimal Threshold: {optimal_threshold}",
+                                        annotation_position="top right")
+                        
+                        fig1.update_layout(
+                            title='Precision, Recall, and F1 Score vs. Threshold',
+                            xaxis_title='Threshold',
+                            yaxis_title='Score',
+                            yaxis=dict(range=[0, 1.05]),
+                            legend=dict(x=0.02, y=0.98),
+                            height=400
+                        )
+                        
+                        # 2. Accuracy and True/False rates
+                        fig2 = go.Figure()
+                        fig2.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['accuracy'], 
+                                                mode='lines+markers', name='Accuracy'))
+                        
+                        # Calculate true positive rate and false positive rate
+                        metrics_df['tpr'] = metrics_df['true_positives'] / (metrics_df['true_positives'] + metrics_df['false_negatives'])
+                        metrics_df['fpr'] = metrics_df['false_positives'] / (metrics_df['false_positives'] + metrics_df['true_negatives'])
+                        
+                        fig2.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['tpr'], 
+                                                mode='lines+markers', name='True Positive Rate'))
+                        fig2.add_trace(go.Scatter(x=metrics_df.index, y=metrics_df['fpr'], 
+                                                mode='lines+markers', name='False Positive Rate'))
+                        
+                        # Add vertical line at optimal threshold
+                        if optimal_threshold:
+                            fig2.add_vline(x=optimal_threshold, line_dash="dash", line_color="green",
+                                        annotation_text=f"Optimal Threshold: {optimal_threshold}",
+                                        annotation_position="top right")
+                        
+                        fig2.update_layout(
+                            title='Accuracy and TPR/FPR vs. Threshold',
+                            xaxis_title='Threshold',
+                            yaxis_title='Rate',
+                            yaxis=dict(range=[0, 1.05]),
+                            legend=dict(x=0.02, y=0.98),
+                            height=400
+                        )
+                        
+                        # 3. ROC Curve (TPR vs FPR)
+                        fig3 = go.Figure()
+                        fig3.add_trace(go.Scatter(x=metrics_df['fpr'], y=metrics_df['tpr'], 
+                                                mode='lines+markers', name='ROC Curve',
+                                                text=metrics_df.index))  # Add threshold as hover text
+                        
+                        # Add diagonal reference line for random classifier
+                        fig3.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', 
+                                                line=dict(dash='dash', color='gray'), 
+                                                name='Random Classifier'))
+                        
+                        # Mark the optimal point
+                        if optimal_threshold:
+                            optimal_point = metrics_df.loc[optimal_threshold]
+                            fig3.add_trace(go.Scatter(x=[optimal_point['fpr']], y=[optimal_point['tpr']],
+                                                    mode='markers', marker=dict(size=10, color='green'),
+                                                    name=f'Optimal (Threshold={optimal_threshold})'))
+                        
+                        fig3.update_layout(
+                            title='ROC Curve (True Positive Rate vs False Positive Rate)',
+                            xaxis_title='False Positive Rate',
+                            yaxis_title='True Positive Rate',
+                            xaxis=dict(range=[0, 1.05]),
+                            yaxis=dict(range=[0, 1.05]),
+                            legend=dict(x=0.02, y=0.02),
+                            height=400
+                        )
+                        
+                        # Display the charts in columns
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.plotly_chart(fig1, use_container_width=True)
+                            st.plotly_chart(fig3, use_container_width=True)
+                        
+                        with col2:
+                            st.plotly_chart(fig2, use_container_width=True)
+                            
+                            # Display optimal threshold metrics
+                            if optimal_threshold:
+                                st.subheader(f"Optimal Threshold: {optimal_threshold}")
+                                opt_metrics = metrics_df.loc[optimal_threshold]
+                                metrics_table = pd.DataFrame({
+                                    'Metric': ['Precision', 'Recall', 'F1 Score', 'Accuracy', 
+                                            'True Positives', 'False Positives', 
+                                            'True Negatives', 'False Negatives'],
+                                    'Value': [opt_metrics['precision'], opt_metrics['recall'], 
+                                            opt_metrics['f1_score'], opt_metrics['accuracy'],
+                                            opt_metrics['true_positives'], opt_metrics['false_positives'],
+                                            opt_metrics['true_negatives'], opt_metrics['false_negatives']]
+                                })
+                                st.table(metrics_table)
+                        
+                        # Show interesting examples 
+                        st.subheader("Analysis of Interesting Examples")
+                        example_tabs = st.tabs(["False Positives", "False Negatives", "Edge Cases"])
+                        
+                        with example_tabs[0]:
+                            if 'false_positives' in evaluation_results['examples'] and not evaluation_results['examples']['false_positives'].empty:
+                                st.write("These are cases where different people's names were incorrectly matched:")
+                                st.dataframe(evaluation_results['examples']['false_positives'])
+                            else:
+                                st.info("No false positive examples found at the optimal threshold.")
+                        
+                        with example_tabs[1]:
+                            if 'false_negatives' in evaluation_results['examples'] and not evaluation_results['examples']['false_negatives'].empty:
+                                st.write("These are cases where the same person's names were not matched:")
+                                st.dataframe(evaluation_results['examples']['false_negatives'])
+                            else:
+                                st.info("No false negative examples found at the optimal threshold.")
+                        
+                        with example_tabs[2]:
+                            if 'edge_cases' in evaluation_results['examples'] and not evaluation_results['examples']['edge_cases'].empty:
+                                st.write("These are borderline cases where the matching score is close to the threshold:")
+                                st.dataframe(evaluation_results['examples']['edge_cases'])
+                            else:
+                                st.info("No edge cases found around the optimal threshold.")
+                        
+                        # Add a download button for the full evaluation results
+                        csv = metrics_df.reset_index().to_csv(index=False)
+                        st.download_button(
+                            "Download Full Evaluation Metrics",
+                            csv,
+                            "fuzzy_matching_evaluation.csv",
+                            "text/csv",
+                            key="download_evaluation"
+                        )
+                        
+                except Exception as e:
+                    st.error(f"Error during evaluation: {str(e)}")
+                    st.exception(e)
+        else:
+            st.warning("Please make sure all three datasets (social media, telecom, and incident reports) are available for evaluation.")
+            st.info("If using your own data, please upload all three datasets. If using sample data, ensure all dataset options are checked.")
+            
 if __name__ == "__main__":
     main()
