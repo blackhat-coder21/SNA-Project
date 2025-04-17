@@ -27,6 +27,67 @@ fake = Faker()
 random.seed(42)
 Faker.seed(42)
 
+def get_dataset_requirements():
+    """
+    Return information about required columns for each dataset when user opts not to use sample data.
+    
+    Returns:
+    dict: Dictionary containing information about required columns for each dataset
+    """
+    return {
+        # "users": {
+        #     "description": "Basic user information for entity resolution across datasets",
+        #     "required_columns": {
+        #         "id": "Unique identifier for each user",
+        #         "name": "Full name of the user"
+        #     }
+        # },
+        "social_media": {
+            "description": "Social media interactions between users",
+            "required_columns": {
+                "source": "User ID of the sender/poster",
+                "source_name": "Name of the sender/poster",
+                "target": "User ID of the receiver/mentioned user",
+                "target_name": "Name of the receiver/mentioned user",
+                "timestamp": "Date and time of the interaction (YYYY-MM-DD HH:MM:SS)",
+                "message": "Content of the social media post/message",
+                "platform": "Social media platform (e.g., Twitter, Facebook)",
+                "is_public": "Boolean indicating if the post is public",
+                "likes": "Number of likes/reactions received"
+            }
+        },
+        "telecom_logs": {
+            "description": "Communication logs between users",
+            "required_columns": {
+                "source": "User ID of the caller/sender",
+                "source_name": "Name of the caller/sender",
+                "target": "User ID of the receiver",
+                "target_name": "Name of the receiver",
+                "duration": "Duration of call in seconds",
+                "timestamp": "Date and time of the call/message (YYYY-MM-DD HH:MM:SS)",
+                "call_type": "Type of communication (voice, sms, video)",
+                "status": "Call status (completed, missed, rejected, busy)",
+                "location": "Location of the caller (optional)"
+            }
+        },
+        "incident_reports": {
+            "description": "Reported incidents involving users",
+            "required_columns": {
+                "source": "User ID of the reporter",
+                "source_name": "Name of the reporter",
+                "target": "User ID of the reported person",
+                "target_name": "Name of the reported person",
+                "incident_type": "Type of incident (fraud, threat, harassment, suspicious)",
+                "location": "Location where the incident occurred",
+                "timestamp": "Date and time of the incident (YYYY-MM-DD HH:MM:SS)",
+                "severity": "Severity rating (1-5 scale)",
+                "resolved": "Boolean indicating if the incident was resolved",
+                "report_id": "Unique identifier for the incident report"
+            }
+        }
+    }
+
+
 # Initialize session state for tracking new data points
 if 'new_data_points' not in st.session_state:
     st.session_state.new_data_points = {
@@ -335,7 +396,8 @@ def generate_sample_data():
     for _ in range(30):
         reporter = random.choice(users)
         suspect = random.choice([u for u in users if u != reporter])
-        incident_type = random.choice(["hoax call", "spam", "threat", "suspicious", "fraud", "harassment"])
+        # Reduced to 4 incident types
+        incident_type = random.choice(["fraud", "threat", "harassment", "suspicious"])
         location = fake.city()
         timestamp = fake.date_time_between(start_date='-1y', end_date='now').strftime('%Y-%m-%d %H:%M:%S')
         incident_data.append([
@@ -350,6 +412,29 @@ def generate_sample_data():
     )
     
     return social_df, telecom_df, incident_df
+
+
+def get_dataset_info():
+    """
+    Return formatted information about dataset requirements for display in the UI
+    when user chooses not to use sample data.
+    
+    Returns:
+    str: Markdown formatted text with dataset requirements
+    """
+    requirements = get_dataset_requirements()
+    info_text = "## Dataset Requirements\n\n"
+    info_text += "When uploading your own data, please ensure your files match these structures:\n\n"
+    
+    for dataset_name, info in requirements.items():
+        info_text += f"### {dataset_name.upper()}\n"
+        info_text += f"{info['description']}\n\n"
+        info_text += "**Required columns:**\n"
+        for col, desc in info['required_columns'].items():
+            info_text += f"- **{col}**: {desc}\n"
+        info_text += "\n"
+    
+    return info_text
 
 def visualize_graph_by_layer(G, layer_name):
     """Create a subgraph containing only edges of a specific layer."""
@@ -397,7 +482,7 @@ def create_new_data_point(source_id, source_name, target_id, target_name, datase
     elif dataset_type == "incident":
         incident_type = st.selectbox(
             "Incident Type:", 
-            ["hoax call", "spam", "threat", "suspicious", "fraud", "harassment"]
+            ["hoax call", "spam", "threat", "suspicious"]
         )
         location = st.text_input("Location:", fake.city())
         return {
@@ -735,10 +820,10 @@ def plot_temporal_analysis(temporal_data):
 def sidebar_components():
     """Create sidebar components for data upload and settings."""
     st.sidebar.title("Data Sources")
-    
     # Option to use sample data
     use_sample_data = st.sidebar.checkbox("Use Sample Data", value=True)
-    
+    # Store this choice in session state so we can access it in main()
+    st.session_state['use_sample_data'] = use_sample_data
     # File uploads
     social_df = telecom_df = incident_df = None
     
@@ -815,8 +900,6 @@ def main():
             - <span style="color:orange"><strong>'spam'</strong>: orange</span>  
             - <span style="color:purple"><strong>'threat'</strong>: purple</span>  
             - <span style="color:gold"><strong>'suspicious'</strong>: yellow</span>  
-            - <span style="color:brown"><strong>'fraud'</strong>: brown</span>  
-            - <span style="color:pink"><strong>'harassment'</strong>: pink</span>
         ---
         ### Getting Started:
         1. Choose to use sample data or upload your own CSV files in the sidebar
@@ -824,6 +907,15 @@ def main():
         3. Explore the different tabs to analyze the network from various perspectives
         """, unsafe_allow_html=True)
     
+    # Check if we're using sample data
+    use_sample_data = st.session_state.get('use_sample_data', True)
+    files_uploaded = social_df is not None or telecom_df is not None or incident_df is not None
+    
+    # Show dataset requirements when not using sample data and no files uploaded yet
+    if not use_sample_data and not files_uploaded:
+        st.header("Dataset Requirements")
+        st.markdown(get_dataset_info())
+
     # Check if we have data to work with
     if not datasets:
         st.warning("Please select at least one dataset to include in the analysis.")
