@@ -889,7 +889,7 @@ def main():
                 # Update the graph
                 st.info("Graph will be updated on the next refresh.")
                 time.sleep(1)
-                st.experimental_rerun()
+                st.rerun()
     
     # Tab 4: Community Detection
     with tab4:
