@@ -232,8 +232,6 @@ def add_incident_type_colors(G, incident_df):
         'spam': 'orange',
         'threat': 'purple',
         'suspicious': 'yellow',
-        'fraud': 'brown',
-        'harassment': 'pink'
     }
     
     if incident_df is not None:
@@ -397,7 +395,7 @@ def generate_sample_data():
         reporter = random.choice(users)
         suspect = random.choice([u for u in users if u != reporter])
         # Reduced to 4 incident types
-        incident_type = random.choice(["fraud", "threat", "harassment", "suspicious"])
+        incident_type = random.choice(["spam", "threat", "hoax call", "suspicious"])
         location = fake.city()
         timestamp = fake.date_time_between(start_date='-1y', end_date='now').strftime('%Y-%m-%d %H:%M:%S')
         incident_data.append([
