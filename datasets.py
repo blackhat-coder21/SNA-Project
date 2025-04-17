@@ -121,7 +121,7 @@ def generate_sample_data_files(num_users=50, output_dir="sample_data"):
     for _ in range(50):
         reporter = random.choice(users)
         suspect = random.choice([u for u in users if u != reporter])
-        incident_type = random.choice(["hoax call", "spam", "threat", "suspicious", "fraud", "harassment"])
+        incident_type = random.choice(["hoax call", "spam", "threat", "suspicious"])
         location = fake.city()
         timestamp = fake.date_time_between(start_date='-1y', end_date='now').strftime('%Y-%m-%d %H:%M:%S')
         severity = random.randint(1, 5)  # 1-5 severity scale
