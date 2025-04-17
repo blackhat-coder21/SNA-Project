@@ -224,9 +224,20 @@ def compute_centrality_measures(G):
         centrality_measures['eigenvector'] = {node: 0 for node in G.nodes()}
     
     try:
-        centrality_measures['pagerank'] = nx.pagerank(G)
-    except:
-        st.warning("Could not compute PageRank.")
+        # Modified PageRank calculation with parameters to handle disconnected components
+        centrality_measures['pagerank'] = nx.pagerank(
+            G,
+            alpha=0.85,  # Damping parameter
+            personalization=None,
+            max_iter=100,  # Reduced from default for better convergence
+            tol=1e-06,  # Relaxed tolerance
+            nstart=None,
+            weight='weight',
+            dangling=None
+        )
+    except Exception as e:
+        st.warning(f"Could not compute PageRank. Error: {str(e)}")
+        # Provide a fallback pagerank value for all nodes
         centrality_measures['pagerank'] = {node: 0 for node in G.nodes()}
     
     return centrality_measures

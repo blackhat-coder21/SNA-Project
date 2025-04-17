@@ -9,3 +9,4 @@ matplotlib
 seaborn
 streamlit
 streamlit_plotly_events
+scipy
