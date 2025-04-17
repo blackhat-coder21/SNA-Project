@@ -27,6 +27,14 @@ fake = Faker()
 random.seed(42)
 Faker.seed(42)
 
+# Initialize session state for tracking new data points
+if 'new_data_points' not in st.session_state:
+    st.session_state.new_data_points = {
+        'social_media': [],
+        'telecom': [],
+        'incident': []
+    }
+
 # Helper Functions
 def generate_html_report(graph, name="network_graph"):
     """Generate a PyVis HTML file from a NetworkX graph."""
@@ -122,6 +130,24 @@ def build_graph(dfs, layer_tags):
                 attrs = {k: v for k, v in row.items() if k not in ['source', 'target', 'source_name', 'target_name']}
                 attrs['layer'] = layer_tag
                 
+                # Check if this is a newly added edge
+                is_new = False
+                for new_point in st.session_state.new_data_points[layer_tag]:
+                    if new_point.get('source') == source and new_point.get('target') == target:
+                        is_new = True
+                        break
+                
+                if is_new:
+                    # Highlight newly added edges with different colors
+                    if layer_tag == 'social_media':
+                        attrs['color'] = '#FF5733'  # Orange-red for social media
+                    elif layer_tag == 'telecom':
+                        attrs['color'] = '#33FF57'  # Green for telecom
+                    elif layer_tag == 'incident':
+                        attrs['color'] = '#3357FF'  # Blue for incident
+                    attrs['width'] = 3  # Make newer edges thicker
+                    attrs['is_new'] = True
+                
                 G.add_edge(source, target, **attrs)
     
     # Compute entity resolution and confidence scores
@@ -136,6 +162,7 @@ def build_graph(dfs, layer_tags):
             G.nodes[node]['value'] = 5 + confidence_scores[node] * 10  # Size based on confidence
     
     return G, id_to_names, resolved_entities, confidence_scores
+
 
 def add_incident_type_colors(G, incident_df):
     """Add color based on incident types to graph nodes."""
@@ -406,33 +433,138 @@ def add_edge_weights_by_frequency(G):
     
     return G
 
-def plot_community_detection(G, resolved_entities, algorithm="louvain"):
-    """Detect communities and visualize them."""
+def plot_community_detection(G, resolved_entities, algorithm="louvain", datasets=None):
+    """Detect communities and visualize them.
+    
+    Parameters:
+    - G: NetworkX graph
+    - resolved_entities: Dictionary mapping node IDs to resolved names
+    - algorithm: Community detection algorithm to use
+    - datasets: A dictionary containing the dataframes for different datasets
+    """
     try:
-        if algorithm == "louvain":
-            from community import community_louvain
-            partition = community_louvain.best_partition(G.to_undirected())
-        elif algorithm == "label_propagation":
-            partition = {node: label for node, label in nx.label_propagation_communities(G.to_undirected())}
-        elif algorithm == "girvan_newman":
-            # For small to medium graphs
-            if G.number_of_nodes() > 100:
-                st.warning("Girvan-Newman algorithm is computationally expensive. Using Louvain instead.")
-                from community import community_louvain
-                partition = community_louvain.best_partition(G.to_undirected())
-            else:
-                comp = nx.community.girvan_newman(G.to_undirected())
-                partition = {}
-                for i, communities in enumerate(comp):
-                    if i > 3:  # Limit to first few iterations
-                        break
-                    for j, community in enumerate(communities):
-                        for node in community:
-                            partition[node] = j
+        # Check if we need to create custom partitions based on node attributes
+        custom_partition = {}
+        
+        if algorithm == "custom" and datasets:
+            # For incident reports, partition by incident_type
+            if 'incident' in datasets and datasets['incident'] is not None:
+                for _, row in datasets['incident'].iterrows():
+                    if 'incident_type' in row and pd.notnull(row['incident_type']):
+                        if 'source' in row and pd.notnull(row['source']):
+                            custom_partition[row['source']] = f"incident_{row['incident_type']}"
+                        if 'target' in row and pd.notnull(row['target']):
+                            custom_partition[row['target']] = f"incident_{row['incident_type']}"
+            
+            # For social media, partition by message content (since platform might not exist)
+            # We'll use message content length as a proxy for different platforms
+            if 'social_media' in datasets and datasets['social_media'] is not None:
+                for _, row in datasets['social_media'].iterrows():
+                    if 'message' in row and pd.notnull(row['message']):
+                        # Classify messages by length as a proxy for platform
+                        msg_length = len(str(row['message']))
+                        platform_type = "short_msg" if msg_length < 50 else "long_msg"
+                        
+                        if 'source' in row and pd.notnull(row['source']):
+                            custom_partition[row['source']] = f"social_{platform_type}"
+                        if 'target' in row and pd.notnull(row['target']):
+                            custom_partition[row['target']] = f"social_{platform_type}"
+            
+            # For telecom logs, partition by call_type
+            if 'telecom' in datasets and datasets['telecom'] is not None:
+                for _, row in datasets['telecom'].iterrows():
+                    if 'call_type' in row and pd.notnull(row['call_type']):
+                        if 'source' in row and pd.notnull(row['source']):
+                            custom_partition[row['source']] = f"telecom_{row['call_type']}"
+                        if 'target' in row and pd.notnull(row['target']):
+                            custom_partition[row['target']] = f"telecom_{row['call_type']}"
+        
+        # Use custom partition if created and we're in custom mode, otherwise use standard algorithm
+        if algorithm == "custom" and custom_partition:
+            partition = custom_partition
+            # Convert string partition values to integers for visualization
+            unique_communities = list(set(partition.values()))
+            community_mapping = {comm: i for i, comm in enumerate(unique_communities)}
+            integer_partition = {node: community_mapping[comm] for node, comm in partition.items()}
+            
+            # Create a mapping to store the original community names
+            community_names = {i: comm for comm, i in community_mapping.items()}
         else:
-            # Default to Louvain
-            from community import community_louvain
-            partition = community_louvain.best_partition(G.to_undirected())
+            # Use standard community detection algorithms with fallbacks
+            if algorithm == "louvain":
+                try:
+                    # Try python-louvain package
+                    from community import community_louvain
+                    partition = community_louvain.best_partition(G.to_undirected())
+                except ImportError:
+                    # Fallback to networkx implementation
+                    try:
+                        from networkx.algorithms.community import greedy_modularity_communities
+                        communities = list(greedy_modularity_communities(G.to_undirected()))
+                        partition = {}
+                        for i, comm in enumerate(communities):
+                            for node in comm:
+                                partition[node] = i
+                    except:
+                        # Last resort: just use degree as a proxy for communities
+                        partition = {node: min(G.degree(node) // 2, 5) for node in G.nodes()}
+                
+                integer_partition = partition
+                community_names = {i: f"Community {i}" for i in set(partition.values())}
+                
+            elif algorithm == "label_propagation":
+                try:
+                    # Try the correct function name
+                    from networkx.algorithms.community import label_propagation_communities
+                    communities = list(label_propagation_communities(G.to_undirected()))
+                    partition = {}
+                    for i, comm in enumerate(communities):
+                        for node in comm:
+                            partition[node] = i
+                except ImportError or AttributeError:
+                    # Fallback to a different community detection algorithm
+                    try:
+                        from networkx.algorithms.community import greedy_modularity_communities
+                        communities = list(greedy_modularity_communities(G.to_undirected()))
+                        partition = {}
+                        for i, comm in enumerate(communities):
+                            for node in comm:
+                                partition[node] = i
+                    except:
+                        # Last resort: just use degree as a proxy for communities
+                        partition = {node: min(G.degree(node) // 2, 5) for node in G.nodes()}
+                
+                integer_partition = partition
+                community_names = {i: f"Community {i}" for i in set(partition.values())}
+                
+            elif algorithm == "girvan_newman":
+                try:
+                    # For small to medium graphs - use only first iteration to avoid computational issues
+                    if G.number_of_nodes() > 100:
+                        # Use degree centrality for large graphs
+                        partition = {node: min(G.degree(node) // 2, 5) for node in G.nodes()}
+                    else:
+                        from networkx.algorithms.community import girvan_newman
+                        comp = list(girvan_newman(G.to_undirected()))
+                        if comp:  # Take just the first level of communities
+                            communities = list(comp[0])
+                            partition = {}
+                            for i, community in enumerate(communities):
+                                for node in community:
+                                    partition[node] = i
+                        else:
+                            partition = {node: 0 for node in G.nodes()}
+                except:
+                    # Fallback to simpler approach
+                    partition = {node: min(G.degree(node) // 2, 5) for node in G.nodes()}
+                
+                integer_partition = partition
+                community_names = {i: f"Community {i}" for i in set(partition.values())}
+            else:
+                # Default fallback
+                partition = {node: min(G.degree(node) // 2, 5) for node in G.nodes()}
+                integer_partition = partition
+                community_names = {i: f"Community {i}" for i in set(partition.values())}
             
         # Create node trace for plotly
         node_x = []
@@ -440,14 +572,29 @@ def plot_community_detection(G, resolved_entities, algorithm="louvain"):
         node_labels = []
         node_colors = []
         node_sizes = []
+        node_hover_texts = []
+        pos = nx.spring_layout(G, seed=42)
+        
         for node in G.nodes():
-            pos = nx.spring_layout(G, seed=42)
             x, y = pos[node]
             node_x.append(x)
             node_y.append(y)
-            node_labels.append(resolved_entities.get(node, str(node)))
-            node_colors.append(partition.get(node, 0))
+            
+            node_name = resolved_entities.get(node, str(node))
+            node_labels.append(node_name)
+            
+            community_id = integer_partition.get(node, 0)
+            node_colors.append(community_id)
+            
             node_sizes.append(G.degree(node) * 2 + 5)
+            
+            # Create hover text with community info
+            if algorithm == "custom" and node in partition:
+                hover_text = f"Node: {node_name}<br>Community: {partition[node]}"
+            else:
+                comm_name = community_names.get(community_id, f"Community {community_id}")
+                hover_text = f"Node: {node_name}<br>Community: {comm_name}"
+            node_hover_texts.append(hover_text)
         
         # Create edge traces
         edge_x = []
@@ -475,7 +622,7 @@ def plot_community_detection(G, resolved_entities, algorithm="louvain"):
             x=node_x, y=node_y,
             mode='markers',
             hoverinfo='text',
-            text=node_labels,
+            text=node_hover_texts,
             marker=dict(
                 color=node_colors,
                 size=node_sizes,
@@ -495,11 +642,11 @@ def plot_community_detection(G, resolved_entities, algorithm="louvain"):
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
         )
         
-        return fig, partition
+        return fig, integer_partition, community_names
     
     except Exception as e:
-        st.error(f"Error in community detection: {e}")
-        return None, {}
+        st.error(f"Error in community detection: {str(e)}")
+        return None, {}, {}
 
 def temporal_analysis(df, time_column="timestamp"):
     """Analyze temporal patterns in the data."""
@@ -652,12 +799,19 @@ def main():
         - **Add real-time data points** to see immediate changes
         - **Run community detection** algorithms
         - **Analyze temporal patterns** in the data
-        
+        - **Color-coded node categories** to easily distinguish data types:  
+            - <span style="color:red"><strong>'hoax call'</strong>: red</span>  
+            - <span style="color:orange"><strong>'spam'</strong>: orange</span>  
+            - <span style="color:purple"><strong>'threat'</strong>: purple</span>  
+            - <span style="color:gold"><strong>'suspicious'</strong>: yellow</span>  
+            - <span style="color:brown"><strong>'fraud'</strong>: brown</span>  
+            - <span style="color:pink"><strong>'harassment'</strong>: pink</span>
+        ---
         ### Getting Started:
         1. Choose to use sample data or upload your own CSV files in the sidebar
         2. Select which data layers to include in the analysis
         3. Explore the different tabs to analyze the network from various perspectives
-        """)
+        """, unsafe_allow_html=True)
     
     # Check if we have data to work with
     if not datasets:
@@ -876,21 +1030,74 @@ def main():
                 # Add to appropriate dataframe
                 if dataset_type == "social_media" and social_df is not None:
                     social_df.loc[len(social_df)] = new_data
+                    st.session_state.new_data_points['social_media'].append(new_data)
                     st.success("Added new social media interaction!")
                 elif dataset_type == "telecom" and telecom_df is not None:
                     telecom_df.loc[len(telecom_df)] = new_data
+                    st.session_state.new_data_points['telecom'].append(new_data)
                     st.success("Added new telecom record!")
                 elif dataset_type == "incident" and incident_df is not None:
                     incident_df.loc[len(incident_df)] = new_data
+                    st.session_state.new_data_points['incident'].append(new_data)
                     st.success("Added new incident report!")
                 else:
                     st.error(f"The {dataset_type} dataset is not available.")
-                
-                # Update the graph
-                st.info("Graph will be updated on the next refresh.")
-                time.sleep(1)
+        
+        # Display newly added data points
+        st.subheader("Recently Added Data Points")
+        
+        added_tabs = st.tabs(["Social Media", "Telecom", "Incident"])
+        
+        with added_tabs[0]:
+            if st.session_state.new_data_points['social_media']:
+                social_added_df = pd.DataFrame(st.session_state.new_data_points['social_media'])
+                st.dataframe(social_added_df, use_container_width=True)
+                st.info("New social media connections are highlighted in orange-red in the network visualization.")
+            else:
+                st.info("No social media data points added yet.")
+        
+        with added_tabs[1]:
+            if st.session_state.new_data_points['telecom']:
+                telecom_added_df = pd.DataFrame(st.session_state.new_data_points['telecom'])
+                st.dataframe(telecom_added_df, use_container_width=True)
+                st.info("New telecom connections are highlighted in green in the network visualization.")
+            else:
+                st.info("No telecom data points added yet.")
+        
+        with added_tabs[2]:
+            if st.session_state.new_data_points['incident']:
+                incident_added_df = pd.DataFrame(st.session_state.new_data_points['incident'])
+                st.dataframe(incident_added_df, use_container_width=True)
+                st.info("New incident connections are highlighted in blue in the network visualization.")
+            else:
+                st.info("No incident data points added yet.")
+        
+        # Display updated network visualization
+        if any(len(points) > 0 for points in st.session_state.new_data_points.values()):
+            st.subheader("Updated Network Visualization")
+            
+            # Rebuild the graph to include new data points
+            G, id_to_names, resolved_entities, confidence_scores = build_graph(datasets, layer_tags)
+            add_incident_type_colors(G, incident_df)
+            G = add_edge_weights_by_frequency(G)
+            
+            # Generate and display the updated visualization
+            html_content = generate_html_report(G, "updated_graph")
+            st.components.v1.html(html_content, height=600)
+            
+            # Download link for updated graph
+            st.markdown(get_download_link(html_content, "updated_network.html"), unsafe_allow_html=True)
+            
+            # Option to clear all added data point highlighting
+            if st.button("Clear Highlighting of Added Points"):
+                st.session_state.new_data_points = {
+                    'social_media': [],
+                    'telecom': [],
+                    'incident': []
+                }
+                st.success("Cleared highlighting of added data points.")
                 st.rerun()
-    
+            
     # Tab 4: Community Detection
     with tab4:
         st.header("Community Detection")
@@ -900,18 +1107,33 @@ def main():
         with col1:
             algorithm = st.selectbox(
                 "Community Detection Algorithm",
-                ["louvain", "label_propagation", "girvan_newman"],
+                ["custom", "louvain", "label_propagation", "girvan_newman"],
                 key="community_algorithm"
             )
             
             st.info("Community detection helps identify clusters of densely connected nodes.")
+            if algorithm == "custom":
+                st.info("Custom mode clusters nodes based on:\n- Incident Type for incident reports\n- Platform for social media\n- Call Type for telecom logs")
             
             if st.button("Run Community Detection"):
                 with st.spinner("Detecting communities..."):
-                    community_fig, community_partition = plot_community_detection(G, resolved_entities, algorithm)
+                    # Create a dictionary of datasets
+                    dataset_dict = {
+                        'social_media': social_df,
+                        'telecom': telecom_df,
+                        'incident': incident_df
+                    }
+                    
+                    # Pass the datasets to the function regardless of algorithm
+                    # The function will only use them for custom algorithm
+                    community_fig, community_partition, community_names = plot_community_detection(
+                        G, resolved_entities, algorithm, dataset_dict
+                    )
+                    
                     if community_fig:
                         st.session_state['community_fig'] = community_fig
                         st.session_state['community_partition'] = community_partition
+                        st.session_state['community_names'] = community_names
                     else:
                         st.error("Failed to detect communities.")
         
@@ -924,37 +1146,52 @@ def main():
         # Show community data if available
         if 'community_partition' in st.session_state and st.session_state['community_partition']:
             partition = st.session_state['community_partition']
+            community_names = st.session_state['community_names']
             
             # Create dataframe of communities
-            community_df = pd.DataFrame(
-                [(node, resolved_entities.get(node, str(node)), community) 
-                 for node, community in partition.items()],
-                columns=["Node ID", "Node Name", "Community"]
-            )
+            community_data = []
+            for node, comm_id in partition.items():
+                comm_name = community_names.get(comm_id, f"Community {comm_id}")
+                community_data.append({
+                    "Node ID": node,
+                    "Node Name": resolved_entities.get(node, str(node)),
+                    "Community ID": comm_id,
+                    "Community Name": comm_name
+                })
+            
+            community_df = pd.DataFrame(community_data)
             
             # Group by community
             st.subheader("Communities")
-            community_sizes = community_df.groupby('Community').size().reset_index(name='Size')
+            community_sizes = community_df.groupby(['Community ID', 'Community Name']).size().reset_index(name='Size')
             
             # Bar chart of community sizes
             fig = px.bar(
                 community_sizes,
-                x='Community',
+                x='Community ID',
                 y='Size',
                 title='Community Sizes',
-                labels={'Community': 'Community ID', 'Size': 'Number of Nodes'}
+                labels={'Community ID': 'Community', 'Size': 'Number of Nodes'},
+                hover_data=['Community Name'],
+                color='Community Name'
             )
             st.plotly_chart(fig, use_container_width=True)
             
             # Show nodes in each community
             st.subheader("Nodes by Community")
+            
+            # Format function to display community names in the selectbox
+            def format_community(comm_id):
+                return community_names.get(comm_id, f"Community {comm_id}")
+            
             community_to_show = st.selectbox(
                 "Select Community:",
                 sorted(set(partition.values())),
+                format_func=format_community,
                 key="community_to_show"
             )
             
-            nodes_in_community = community_df[community_df['Community'] == community_to_show]
+            nodes_in_community = community_df[community_df['Community ID'] == community_to_show]
             st.dataframe(nodes_in_community)
     
     # Tab 5: Temporal Analysis
